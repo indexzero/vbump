@@ -177,6 +177,10 @@ if [ -z $NO_NPM ]; then
   if [ ! -f 'package.json' ]; then
     echoc "No package.json file. Skipping 'npm publish'" "YELLOW"
   else
-    run npm publish
+    if [ -n "$NPM_CONFIG" ]; then
+      run npm publish --userconfig $NPM_CONFIG
+    else
+      run npm publish
+    fi
   fi
 fi
