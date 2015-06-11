@@ -1,7 +1,6 @@
 #!/bin/bash
 
 [ -f "package.json" ] && VERSION=`node -e "console.log(require('./package').version)"` || VERSION=
-[ -z "$NPM" ] && NPM=npm
 NO_NPM=
 CHANGED=
 DRY_RUN=
