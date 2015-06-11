@@ -1,0 +1,132 @@
+#!/bin/bash
+
+# TODO: Use the parsed package.json script and check the git tags against it.
+#[ -f "package.json" ] && VERSION=`pkgver package.json` || VERSION=
+
+VERSION=
+NO_NPM=
+CHANGED=
+DRY_RUN=
+TAG_ONLY=
+COMMIT_MSG=
+
+#
+# usage()
+# Prints the usage for this script
+#
+usage()
+{
+cat << EOF
+usage: vbump options
+
+This commits a version bump and tags it git, then published to npm.
+
+OPTIONS:
+   -v  [required] Target version to bump.
+   -t  Tag only. Do not git commit.
+   -h  Show this message.
+   -p  Do not publish to npm.
+   -m  Commit message you wish to use.
+   -d  Dry-run. No nothing but echo commands.
+EOF
+}
+
+#
+# checkgit()
+# Ensures everything is up-to-date
+#
+checkgit() {
+  echo "Checking git for remote updates"
+  git pull --dry-run | grep -q -v 'Already up-to-date.' && CHANGED=1
+
+  if [ ! -z $CHANGED ]; then
+    echo "You need to pull from the remote before continuing"
+    echo "Run 'git pull origin master'"
+    exit 1
+  fi
+}
+
+# Setup colors
+source $HOME/.functions
+set_colors
+
+while getopts "v:m:hpdt" OPTION; do
+  case $OPTION in
+    h)
+      usage
+      exit
+      ;;
+    d)
+      echoc "-d: Executing dry-run..." "YELLOW"
+      DRY_RUN=1
+      ;;
+    t)
+      echoc "-t: Skipping 'git commit'" "YELLOW"
+      TAG_ONLY=1
+      ;;
+    p)
+      echoc "-p: Skipping 'npm publish'" "YELLOW"
+      NO_NPM=1
+      ;;
+    m)
+      COMMIT_MSG=$OPTARG
+      ;;
+    v)
+      VERSION=$OPTARG
+      ;;
+    \?)
+      usage
+      exit
+      ;;
+  esac
+done
+
+#
+# If there is no version then exit; it is required.
+#
+if [ -z $VERSION ]; then
+  echoc "No version specified. Use -v VERSION" "YELLOW"
+  usage
+  exit
+fi
+
+#
+# If no custom message was supplied then use
+# the default message
+#
+if [ -z "$COMMIT_MSG" ]; then
+  COMMIT_MSG="[dist] Version bump. $VERSION"
+fi
+
+# Check git remote(s)
+checkgit
+
+#
+# Run git commit only if `-t` is not set
+#
+if [ -z $TAG_ONLY ]; then
+  run git add .
+  run git commit -m "$COMMIT_MSG"
+fi
+
+#
+# Always tag since we are version bumping.
+#
+run git tag -a "$VERSION" -m "Version $VERSION"
+run git push --tags
+
+#
+# Push to `master` only if `-t` is not set
+#
+if [ -z $TAG_ONLY ]; then
+  run git push origin master
+fi
+
+# Check for a package.json
+if [ -z $NO_NPM ]; then
+  if [ ! -f 'package.json' ]; then
+    echoc "No package.json file. Skipping 'npm publish'" "YELLOW"
+  else
+    run npm publish
+  fi
+fi

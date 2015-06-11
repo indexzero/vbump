@@ -1,0 +1,17 @@
+{
+  "name": "vbump",
+  "version": "0.0.0",
+  "description": "A script to bump versions of things to git, npm, etc.",
+  "preferGlobal": true,
+  "bin": "./vbump",
+  "scripts": {
+    "test": "echo \"No tests.\""
+  },
+  "keywords": [
+    "npm",
+    "versioning",
+    "vbump"
+  ],
+  "author": "Charlie Robbins <charlie.robbins@gmail.com>",
+  "license": "MIT"
+}
