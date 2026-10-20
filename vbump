@@ -6,6 +6,12 @@ CHANGED=
 DRY_RUN=
 TAG_ONLY=
 COMMIT_MSG=
+VERSION_ARG=
+PKG_PATH=
+PKG_DIR=.
+PKG_NAME=
+PKG_VERSION=
+TAG=
 
 #
 # usage()
@@ -25,6 +31,11 @@ OPTIONS:
    -p  Do not publish to npm.
    -m  Commit message you wish to use.
    -d  Dry-run. No nothing but echo commands.
+   -P, --path FILE
+       Bump one package in a monorepo. FILE is that package's package.json.
+       The version defaults to its "version", the tag is "<name>@<version>",
+       only its directory is staged and publish runs inside it (with pnpm
+       when the repository root has a pnpm-workspace.yaml, else npm).
 EOF
 }
 
@@ -96,7 +107,87 @@ checkgit() {
   fi
 }
 
-while getopts "v:m:hpdt" OPTION; do
+#
+# readpkg()
+# Reads "name" and "version" from the package.json named by -P/--path
+# into PKG_NAME and PKG_VERSION, and its directory into PKG_DIR.
+# Exits with a clear message when the file is missing, is not JSON,
+# has no name or version, or is not inside this git repository.
+#
+readpkg() {
+  if [ ! -f "$PKG_PATH" ]; then
+    echoc "--path: no such file: $PKG_PATH" "RED"
+    exit 1
+  fi
+
+  local fields
+  fields=$(node -e '
+    const fs = require("fs");
+    const file = process.argv[1];
+    let pkg;
+    try {
+      pkg = JSON.parse(fs.readFileSync(file, "utf8"));
+    } catch (err) {
+      console.error("--path: " + file + " is not valid JSON: " + err.message);
+      process.exit(1);
+    }
+    if (!pkg || typeof pkg !== "object") {
+      console.error("--path: " + file + " is not a JSON object");
+      process.exit(1);
+    }
+    if (typeof pkg.name !== "string" || !pkg.name) {
+      console.error("--path: " + file + " has no \"name\"");
+      process.exit(1);
+    }
+    if (typeof pkg.version !== "string" || !pkg.version) {
+      console.error("--path: " + file + " has no \"version\"");
+      process.exit(1);
+    }
+    process.stdout.write(pkg.name + "\n" + pkg.version + "\n");
+  ' "$PKG_PATH") || exit 1
+
+  PKG_NAME=$(printf '%s\n' "$fields" | sed -n 1p)
+  PKG_VERSION=$(printf '%s\n' "$fields" | sed -n 2p)
+  PKG_DIR=$(dirname "$PKG_PATH")
+
+  local root pkgroot
+  root=$(git rev-parse --show-toplevel 2>/dev/null)
+  pkgroot=$(git -C "$PKG_DIR" rev-parse --show-toplevel 2>/dev/null)
+  if [ -z "$root" ] || [ "$root" != "$pkgroot" ]; then
+    echoc "--path: $PKG_PATH is not inside this git repository" "RED"
+    exit 1
+  fi
+}
+
+#
+# Translate the long form --path FILE (and --path=FILE) to -P FILE
+# before getopts, which only understands single-letter options.
+#
+ARGS=()
+while [ $# -gt 0 ]; do
+  case $1 in
+    --path)
+      if [ $# -lt 2 ]; then
+        echoc "--path requires a FILE argument" "RED"
+        usage
+        exit 1
+      fi
+      ARGS+=(-P "$2")
+      shift 2
+      ;;
+    --path=*)
+      ARGS+=(-P "${1#--path=}")
+      shift
+      ;;
+    *)
+      ARGS+=("$1")
+      shift
+      ;;
+  esac
+done
+set -- "${ARGS[@]}"
+
+while getopts "v:m:P:hpdt" OPTION; do
   case $OPTION in
     h)
       usage
@@ -118,7 +209,10 @@ while getopts "v:m:hpdt" OPTION; do
       COMMIT_MSG=$OPTARG
       ;;
     v)
-      VERSION=$OPTARG
+      VERSION_ARG=$OPTARG
+      ;;
+    P)
+      PKG_PATH=$OPTARG
       ;;
     \?)
       usage
@@ -126,6 +220,17 @@ while getopts "v:m:hpdt" OPTION; do
       ;;
   esac
 done
+
+#
+# With -P/--path the default version comes from that package.json
+# and the tag is <name>@<version>. -v always wins over the file.
+#
+if [ -n "$PKG_PATH" ]; then
+  readpkg
+  echoc "--path: $PKG_NAME@$PKG_VERSION in $PKG_DIR" "YELLOW"
+  VERSION=$PKG_VERSION
+fi
+[ -n "$VERSION_ARG" ] && VERSION=$VERSION_ARG
 
 #
 # If there is no version then exit; it is required.
@@ -136,12 +241,18 @@ if [ -z $VERSION ]; then
   exit
 fi
 
+if [ -n "$PKG_PATH" ]; then
+  TAG="$PKG_NAME@$VERSION"
+else
+  TAG=$VERSION
+fi
+
 #
 # If no custom message was supplied then use
 # the default message
 #
 if [ -z "$COMMIT_MSG" ]; then
-  COMMIT_MSG="[dist] Version bump. $VERSION"
+  COMMIT_MSG="[dist] Version bump. $TAG"
 fi
 
 #
@@ -153,14 +264,14 @@ checkgit
 # Run git commit only if `-t` is not set
 #
 if [ -z $TAG_ONLY ]; then
-  run git add .
+  run git add "$PKG_DIR"
   run git commit -m "$COMMIT_MSG"
 fi
 
 #
 # Always tag since we are version bumping.
 #
-run git tag -a "$VERSION" -m "Version $VERSION"
+run git tag -a "$TAG" -m "Version $TAG"
 run git push --tags
 
 #
@@ -174,7 +285,20 @@ fi
 # Check for a package.json
 #
 if [ -z $NO_NPM ]; then
-  if [ ! -f 'package.json' ]; then
+  if [ -n "$PKG_PATH" ]; then
+    #
+    # Publish from inside the package directory. Use pnpm in a pnpm
+    # workspace so `workspace:` ranges are rewritten; npm leaves them as-is.
+    #
+    run cd "$PKG_DIR" || exit 1
+    if [ -f "$(git rev-parse --show-toplevel)/pnpm-workspace.yaml" ]; then
+      run pnpm publish
+    elif [ -n "$NPM_CONFIG" ]; then
+      run npm publish --userconfig "$NPM_CONFIG"
+    else
+      run npm publish
+    fi
+  elif [ ! -f 'package.json' ]; then
     echoc "No package.json file. Skipping 'npm publish'" "YELLOW"
   else
     if [ -n "$NPM_CONFIG" ]; then
